@@ -81,24 +81,25 @@ func createServiceLW(kubeClient *kclient.Client) *kcache.ListWatch {
 
 const vulcanetcdpath string = "/vulcand/"
 
-func (kv *kube2vulcand) addVulcandBackend(s *kapi.Service) error {
+func (kv *kube2vulcand) addVulcandBackend(i instance) error {
 	//path := vulcanetcdpath + "backends/" + s.Name + "/backend"
 	//value := []byte(`{"type": "http"}`)
 	//_, err := kv.etcdClient.Set(path, value, 0)
 	//return err
-	backend, err := vulcandng.NewHTTPBackend(s.Name, vulcandng.HTTPBackendSettings{})
+	backend, err := vulcandng.NewHTTPBackend(i.Name, vulcandng.HTTPBackendSettings{})
 	if err != nil {
 		return err
 	}
 	return kv.vulcandClient.UpsertBackend(*backend)
 }
 
-func (kv *kube2vulcand) addVulcandFrontend(s *kapi.Service) error {
+func (kv *kube2vulcand) addVulcandFrontend(i instance) error {
 	//path := vulcanetcdpath + "frontends/" + s.Name + "/frontend"
 	//value := []byte(`{"type": "http", "BackendId": }`)
-	route := fmt.Sprintf("Host(`%s.<whatever>`) && Path(`/`)", s.Name)
-	frontend, err := vulcandng.NewHTTPFrontend(s.Name, s.Name, route, vulcandng.HTTPFrontendSettings{})
+	route := fmt.Sprintf("Host(`%s.<whatever>`) && Path(`/`)", i.Name)
+	frontend, err := vulcandng.NewHTTPFrontend(i.Name, i.Name, route, vulcandng.HTTPFrontendSettings{})
 	if err != nil {
+		glog.Errorf("C'est casse patron:", err)
 		return err
 	}
 	return kv.vulcandClient.UpsertFrontend(*frontend, 0)
@@ -107,6 +108,11 @@ func (kv *kube2vulcand) addVulcandFrontend(s *kapi.Service) error {
 type vulcandServer struct {
 	URL  string
 	Name string
+}
+
+type instance struct {
+	Name    string // admin.os-identity or os-identity
+	Servers []vulcandServer
 }
 
 func (kv *kube2vulcand) newService(obj interface{}) {
@@ -124,10 +130,19 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 				return
 			}
 			nodes := nodesList.Items
-			servers := []vulcandServer{}
+			instances := []instance{}
 			for _, port := range s.Spec.Ports {
 				if port.Protocol != kapi.ProtocolTCP {
 					continue
+				}
+				var instanceName string
+				if port.Name == "" {
+					instanceName = s.Name
+				} else {
+					instanceName = port.Name + "." + s.Name
+				}
+				currentInstance := instance{
+					Name: instanceName,
 				}
 				for _, node := range nodes {
 					// POPO
@@ -136,19 +151,20 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 						URL:  url,
 						Name: getHash(url),
 					}
-					servers = append(servers, s)
+					currentInstance.Servers = append(currentInstance.Servers, s)
 				}
+				instances = append(instances, currentInstance)
 			}
-			if len(servers) > 0 {
-				kv.addVulcandFrontend(s)
-				kv.addVulcandBackend(s)
-				for _, server := range servers {
+			for _, i := range instances {
+				kv.addVulcandFrontend(i)
+				kv.addVulcandBackend(i)
+				for _, server := range i.Servers {
 					srv, err := vulcandng.NewServer(server.Name, server.URL)
 					if err != nil {
 						glog.Errorf("Failed to create a kubernetes client: %v", err)
 						continue
 					}
-					kv.vulcandClient.UpsertServer(vulcandng.BackendKey{Id: s.Name}, *srv, 0)
+					kv.vulcandClient.UpsertServer(vulcandng.BackendKey{Id: i.Name}, *srv, 0)
 				}
 			}
 			//name := buildDNSNameString(kv.domain, s.Namespace, s.Name)
