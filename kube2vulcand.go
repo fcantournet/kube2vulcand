@@ -54,8 +54,6 @@ const (
 	maxConnectAttempts = 12
 	// Resync period for the kube controller loop.
 	resyncPeriod = 30 * time.Minute
-	// A subdomain added to the user specified domain for all services.
-	serviceSubdomain = "svc"
 )
 
 type nameNamespace struct {
@@ -79,13 +77,7 @@ func createServiceLW(kubeClient *kclient.Client) *kcache.ListWatch {
 	return kcache.NewListWatchFromClient(kubeClient, "services", kapi.NamespaceAll, kSelector.Everything())
 }
 
-const vulcanetcdpath string = "/vulcand/"
-
 func (kv *kube2vulcand) addVulcandBackend(i instance) error {
-	//path := vulcanetcdpath + "backends/" + s.Name + "/backend"
-	//value := []byte(`{"type": "http"}`)
-	//_, err := kv.etcdClient.Set(path, value, 0)
-	//return err
 	backend, err := vulcandng.NewHTTPBackend(i.Name, vulcandng.HTTPBackendSettings{})
 	if err != nil {
 		return err
@@ -99,7 +91,7 @@ func (kv *kube2vulcand) addVulcandFrontend(i instance) error {
 	route := fmt.Sprintf("Host(`%s.<whatever>`) && Path(`/`)", i.Name)
 	frontend, err := vulcandng.NewHTTPFrontend(i.Name, i.Name, route, vulcandng.HTTPFrontendSettings{})
 	if err != nil {
-		glog.Errorf("C'est casse patron:", err)
+		glog.Errorf("addVulcandFrontend: Failed to create HTTPFrontend : ", err)
 		return err
 	}
 	return kv.vulcandClient.UpsertFrontend(*frontend, 0)
@@ -156,21 +148,23 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 				instances = append(instances, currentInstance)
 			}
 			for _, i := range instances {
-				kv.addVulcandFrontend(i)
-				kv.addVulcandBackend(i)
+				if err := kv.addVulcandFrontend(i); err {
+					errors.New("Failed to add Vulcand Frontend : ", err)
+				}
+				if err := kv.addVulcandBackend(i); err {
+					errors.New("Failed to add Vulcand Backend : ", err)
+				}
 				for _, server := range i.Servers {
 					srv, err := vulcandng.NewServer(server.Name, server.URL)
 					if err != nil {
-						glog.Errorf("Failed to create a kubernetes client: %v", err)
+						glog.Errorf("Failed to create a Vulcand server", err)
 						continue
 					}
-					kv.vulcandClient.UpsertServer(vulcandng.BackendKey{Id: i.Name}, *srv, 0)
+					if err := kv.vulcandClient.UpsertServer(vulcandng.BackendKey{Id: i.Name}, *srv, 0); err {
+						errors.New("Failed to create Vulcand Server : ", err)
+					}
 				}
 			}
-			//name := buildDNSNameString(kv.domain, s.Namespace, s.Name)
-			//kv.mutateEtcdOrDie(func() error { return kv.addDNS(name, s, false) })
-			//name = buildDNSNameString(kv.domain, serviceSubdomain, s.Namespace, s.Name)
-			//kv.mutateEtcdOrDie(func() error { return kv.addDNS(name, s, true) })
 		}
 	}
 }
@@ -178,13 +172,10 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 func (kv *kube2vulcand) removeService(obj interface{}) {
 	if s, ok := obj.(*kapi.Service); ok {
 		if s.Spec.Type == kapi.ServiceTypeLoadBalancer {
+			//FIXME: the key are not the same as the service Name anymore.
 			kv.vulcandClient.DeleteFrontend(vulcandng.FrontendKey{Id: s.Name})
 			kv.vulcandClient.DeleteBackend(vulcandng.BackendKey{Id: s.Name})
 		}
-		//		name := buildDNSNameString(kv.domain, s.Namespace, s.Name)
-		//		kv.mutateEtcdOrDie(func() error { return kv.removeDNS(name) })
-		//		name = buildDNSNameString(kv.domain, serviceSubdomain, s.Namespace, s.Name)
-		//		kv.mutateEtcdOrDie(func() error { return kv.removeDNS(name) })
 	}
 }
 
