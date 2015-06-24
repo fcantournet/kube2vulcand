@@ -26,7 +26,6 @@ import (
 	"hash/fnv"
 	"net/url"
 	"os"
-	"sync"
 	"time"
 
 	kapi "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
@@ -50,8 +49,6 @@ var (
 )
 
 const (
-	// Maximum number of attempts to connect to etcd server.
-	maxConnectAttempts = 12
 	// Resync period for the kube controller loop.
 	resyncPeriod = 30 * time.Minute
 )
@@ -69,7 +66,7 @@ type kube2vulcand struct {
 	// A cache that contains all the servicess in the system.
 	servicesStore kcache.Store
 	// Lock for controlling access to headless services.
-	mlock sync.Mutex
+	//mlock sync.Mutex
 }
 
 // Returns a cache.ListWatch that gets all changes to services.
@@ -86,8 +83,6 @@ func (kv *kube2vulcand) addVulcandBackend(i instance) error {
 }
 
 func (kv *kube2vulcand) addVulcandFrontend(i instance) error {
-	//path := vulcanetcdpath + "frontends/" + s.Name + "/frontend"
-	//value := []byte(`{"type": "http", "BackendId": }`)
 	route := fmt.Sprintf("Host(`%s.<whatever>`) && Path(`/`)", i.Name)
 	frontend, err := vulcandng.NewHTTPFrontend(i.Name, i.Name, route, vulcandng.HTTPFrontendSettings{})
 	if err != nil {
@@ -109,8 +104,9 @@ type instance struct {
 
 func (kv *kube2vulcand) newService(obj interface{}) {
 	if s, ok := obj.(*kapi.Service); ok {
-		//TODO(artfulcoder) stop adding and deleting old-format string for service
+		// We only care about external services, which are declared as LoadBalancer (because they cloudprovider to make one)
 		if s.Spec.Type == kapi.ServiceTypeLoadBalancer {
+			// TODO: refactor to use the same KubeClient as the service poller ?
 			kubeClient, err := newKubeClient()
 			if err != nil {
 				glog.Errorf("Failed to create a kubernetes client: %v", err)
@@ -148,11 +144,11 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 				instances = append(instances, currentInstance)
 			}
 			for _, i := range instances {
-				if err := kv.addVulcandFrontend(i); err {
-					errors.New("Failed to add Vulcand Frontend : ", err)
+				if err := kv.addVulcandBackend(i); err != nil {
+					glog.Errorf("Failed to add Vulcand Backend : ", err)
 				}
-				if err := kv.addVulcandBackend(i); err {
-					errors.New("Failed to add Vulcand Backend : ", err)
+				if err := kv.addVulcandFrontend(i); err != nil {
+					glog.Errorf("Failed to add Vulcand Frontend : ", err)
 				}
 				for _, server := range i.Servers {
 					srv, err := vulcandng.NewServer(server.Name, server.URL)
@@ -160,8 +156,8 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 						glog.Errorf("Failed to create a Vulcand server", err)
 						continue
 					}
-					if err := kv.vulcandClient.UpsertServer(vulcandng.BackendKey{Id: i.Name}, *srv, 0); err {
-						errors.New("Failed to create Vulcand Server : ", err)
+					if err := kv.vulcandClient.UpsertServer(vulcandng.BackendKey{Id: i.Name}, *srv, 0); err != nil {
+						glog.Errorf("Failed to create Vulcand Server : ", err)
 					}
 				}
 			}
@@ -172,9 +168,19 @@ func (kv *kube2vulcand) newService(obj interface{}) {
 func (kv *kube2vulcand) removeService(obj interface{}) {
 	if s, ok := obj.(*kapi.Service); ok {
 		if s.Spec.Type == kapi.ServiceTypeLoadBalancer {
-			//FIXME: the key are not the same as the service Name anymore.
-			kv.vulcandClient.DeleteFrontend(vulcandng.FrontendKey{Id: s.Name})
-			kv.vulcandClient.DeleteBackend(vulcandng.BackendKey{Id: s.Name})
+			for _, port := range s.Spec.Ports {
+				if port.Protocol != kapi.ProtocolTCP {
+					continue
+				}
+				var instanceName string
+				if port.Name == "" {
+					instanceName = s.Name
+				} else {
+					instanceName = port.Name + "." + s.Name
+				}
+				kv.vulcandClient.DeleteFrontend(vulcandng.FrontendKey{Id: instanceName})
+				kv.vulcandClient.DeleteBackend(vulcandng.BackendKey{Id: instanceName})
+			}
 		}
 	}
 }
