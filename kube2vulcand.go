@@ -83,7 +83,7 @@ func (kv *kube2vulcand) addVulcandBackend(i instance) error {
 }
 
 func (kv *kube2vulcand) addVulcandFrontend(i instance) error {
-	route := fmt.Sprintf("Host(`%s.<whatever>`) && Path(`/`)", i.Name)
+	route := fmt.Sprintf("Host(`%s.<whatever>`) && Path(`/<path>`)", i.Name)
 	frontend, err := vulcandng.NewHTTPFrontend(i.Name, i.Name, route, vulcandng.HTTPFrontendSettings{})
 	if err != nil {
 		glog.Errorf("addVulcandFrontend: Failed to create HTTPFrontend : ", err)
