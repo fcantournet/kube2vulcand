@@ -191,8 +191,8 @@ func (kv *kube2vulcand) updateService(oldObj, newObj interface{}) {
 	kv.newService(newObj)
 }
 
-func newVulcandClient(vulcandserver string) (*vulcandapi.Client, error) {
-	client := vulcandapi.NewClient(vulcandserver, nil)
+func newVulcandClient(vulcandURL string) (*vulcandapi.Client, error) {
+	client := vulcandapi.NewClient(vulcandURL, nil)
 	if client != nil {
 		return client, nil
 	}
